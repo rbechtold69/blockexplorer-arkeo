@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 
-// Arkeo RPC endpoints (all providers serving arkeo-mainnet-fullnode)
+// Arkeo RPC endpoints — use same-origin proxy on HTTPS, direct on GitHub Pages
+const isHTTPS = typeof window !== 'undefined' && window.location.protocol === 'https:'
 const RPC_ENDPOINTS = {
-  liquify: 'https://arkeo-provider.liquify.com/arkeo-mainnet-fullnode',
-  red5: 'http://red5-arkeo.duckdns.org:3636/arkeo-mainnet-fullnode',
-  innovationtheory: 'http://provider-core-1.innovationtheory.com:3636/arkeo-mainnet-fullnode',
+  liquify: isHTTPS ? '/rpc/liquify/arkeo-mainnet-fullnode' : 'https://arkeo-provider.liquify.com/arkeo-mainnet-fullnode',
+  red5: isHTTPS ? '/rpc/red5/arkeo-mainnet-fullnode' : 'http://red5-arkeo.duckdns.org:3636/arkeo-mainnet-fullnode',
+  innovationtheory: isHTTPS ? '/rpc/innovationtheory/arkeo-mainnet-fullnode' : 'http://provider-core-1.innovationtheory.com:3636/arkeo-mainnet-fullnode',
 }
 const RPC = RPC_ENDPOINTS.liquify // primary
 
@@ -81,117 +82,137 @@ function App() {
   const [arkeoClaims, setArkeoClaims] = useState<number>(0)
   const [recentArkeoTxs, setRecentArkeoTxs] = useState<Array<{ type: string; hash: string; height: string; attrs: Record<string, string> }>>([])
 
+  const statsLoaded = useState(false)[0]
+  const [statsLoadedRef] = useState({ current: false })
+
+  // Safe JSON fetch — handles rate limit text responses gracefully
+  const safeFetch = async (url: string) => {
+    const res = await fetch(url)
+    const text = await res.text()
+    if (text.startsWith('free client') || text.startsWith('rate limit')) {
+      return null // silently skip rate-limited responses
+    }
+    return JSON.parse(text)
+  }
+
   const fetchData = useCallback(async () => {
     try {
       setError(null)
+      const isFirstLoad = !statsLoadedRef.current
 
-      // Fetch status from both providers (measure latency)
+      // Use primary provider for lightweight refresh (status + blocks = 2 reqs)
+      const P1 = RPC_ENDPOINTS.liquify
+
+      // Fetch status (1 req)
       const t1 = performance.now()
-      const statusRes = await fetch(`${RPC_ENDPOINTS.liquify}/status`)
-      const statusData = await statusRes.json()
+      const statusData = await safeFetch(`${P1}/status`)
+      if (!statusData) { setLoading(false); return }
       const liquifyMs = Math.round(performance.now() - t1)
-
-      const t2 = performance.now()
-      try {
-        await fetch(`${RPC_ENDPOINTS.red5}/status`)
-      } catch { /* Red5 may not have CORS */ }
-      const red5Ms = Math.round(performance.now() - t2)
-      
-      const t3 = performance.now()
-      try {
-        await fetch(`${RPC_ENDPOINTS.innovationtheory}/status`)
-      } catch { /* may not have CORS */ }
-      const itMs = Math.round(performance.now() - t3)
-      setRpcLatency({ liquify: liquifyMs, red5: red5Ms, innovationtheory: itMs })
+      setRpcLatency(prev => ({ ...prev, liquify: liquifyMs }))
 
       const si = statusData.result.sync_info
-      const ni = statusData.result.node_info
       const latestHeight = parseInt(si.latest_block_height)
 
-      // Fetch validators
-      const valRes = await fetch(`${RPC}/validators?per_page=100`)
-      const valData = await valRes.json()
-      const vals = valData.result.validators || []
-      setValidators(vals)
+      // Fetch recent blocks (1 req — total 2 for refresh cycle)
+      const blockchainData = await safeFetch(`${P1}/blockchain?minHeight=${Math.max(1, latestHeight - 9)}&maxHeight=${latestHeight}`)
+      if (blockchainData) {
+        const blockMetas = (blockchainData.result.block_metas || []).map((bm: any) => ({
+          height: bm.header.height,
+          time: bm.header.time,
+          proposer_address: bm.header.proposer_address,
+          chain_id: bm.header.chain_id,
+          num_txs: parseInt(bm.num_txs || '0'),
+        }))
+        setBlocks(blockMetas)
+      }
 
-      // Fetch recent blocks
-      const minH = Math.max(1, latestHeight - 9)
-      const blockchainRes = await fetch(`${RPC}/blockchain?minHeight=${minH}&maxHeight=${latestHeight}`)
-      const blockchainData = await blockchainRes.json()
-      const blockMetas = (blockchainData.result.block_metas || []).map((bm: any) => ({
-        height: bm.header.height,
-        time: bm.header.time,
-        proposer_address: bm.header.proposer_address,
-        chain_id: bm.header.chain_id,
-        num_txs: parseInt(bm.num_txs || '0'),
-      }))
-      setBlocks(blockMetas)
+      // === FIRST LOAD ONLY: Heavy queries spread across providers ===
+      if (isFirstLoad) {
+        const P2 = RPC_ENDPOINTS.red5
+        const P3 = RPC_ENDPOINTS.innovationtheory
 
-      // Recent transactions
-      const txRes = await fetch(`${RPC}/tx_search?query="tx.height>${latestHeight - 100}"&per_page=20&order_by="desc"`)
-      const txData = await txRes.json()
-      setRecentTxs(txData.result.txs || [])
+        // Latency checks for other providers
+        const t2 = performance.now()
+        try { await safeFetch(`${P2}/status`); setRpcLatency(prev => ({ ...prev, red5: Math.round(performance.now() - t2) })) } catch { setRpcLatency(prev => ({ ...prev, red5: -1 })) }
+        const t3 = performance.now()
+        try { await safeFetch(`${P3}/status`); setRpcLatency(prev => ({ ...prev, innovationtheory: Math.round(performance.now() - t3) })) } catch { setRpcLatency(prev => ({ ...prev, innovationtheory: -1 })) }
 
-      // Arkeo module stats
-      const [provRes, contRes, claimRes] = await Promise.all([
-        fetch(`${RPC}/tx_search?query="message.action='/arkeo.arkeo.MsgModProvider'"&per_page=1`),
-        fetch(`${RPC}/tx_search?query="message.action='/arkeo.arkeo.MsgOpenContract'"&per_page=1`),
-        fetch(`${RPC}/tx_search?query="message.action='/arkeo.arkeo.MsgClaimContractIncome'"&per_page=1`),
-      ])
-      const [provData, contData, claimData] = await Promise.all([provRes.json(), contRes.json(), claimRes.json()])
-      
-      const provCount = parseInt(provData.result.total_count || '0')
-      const contCount = parseInt(contData.result.total_count || '0')
-      const claimCount = parseInt(claimData.result.total_count || '0')
-      setArkeoProviders(provCount)
-      setArkeoContracts(contCount)
-      setArkeoClaims(claimCount)
+        // Validators from P1 (1 more req on Liquify — total 4 on first load)
+        const valData = await safeFetch(`${P1}/validators?per_page=100`)
+        if (valData) setValidators(valData.result.validators || [])
 
-      // Fetch recent Arkeo-specific txs
-      const arkeoTxRes = await fetch(`${RPC}/tx_search?query="tx.height>${latestHeight - 5000}"&per_page=50&order_by="desc"`)
-      const arkeoTxData = await arkeoTxRes.json()
-      const arkeoTxList: Array<{ type: string; hash: string; height: string; attrs: Record<string, string> }> = []
-      
-      for (const tx of (arkeoTxData.result.txs || [])) {
-        for (const ev of tx.tx_result.events) {
-          if (ev.type === 'message') {
-            const attrs: Record<string, string> = {}
-            for (const a of ev.attributes) {
-              attrs[decodeAttr(a.key)] = decodeAttr(a.value)
-            }
-            if (attrs.action && attrs.action.startsWith('/arkeo')) {
-              const type = attrs.action.split('.').pop()?.replace('Msg', '') || 'Unknown'
-              arkeoTxList.push({ type, hash: tx.hash, height: tx.height, attrs })
+        // Recent txs from P2 — Red_5 (2 reqs on Red_5)
+        const txData = await safeFetch(`${P2}/tx_search?query="tx.height>${latestHeight - 100}"&per_page=20&order_by="desc"`)
+        if (txData) setRecentTxs(txData.result.txs || [])
+
+        // Wait a beat to not hammer providers simultaneously  
+        await new Promise(r => setTimeout(r, 1000))
+
+        const arkeoTxData = await safeFetch(`${P2}/tx_search?query="tx.height>${latestHeight - 5000}"&per_page=50&order_by="desc"`)
+
+        // Arkeo module stats from P3 — InnovationTheory (3 reqs)
+        const [provData, contData, claimData] = await Promise.all([
+          safeFetch(`${P3}/tx_search?query="message.action='/arkeo.arkeo.MsgModProvider'"&per_page=1`),
+          safeFetch(`${P3}/tx_search?query="message.action='/arkeo.arkeo.MsgOpenContract'"&per_page=1`),
+          safeFetch(`${P3}/tx_search?query="message.action='/arkeo.arkeo.MsgClaimContractIncome'"&per_page=1`),
+        ])
+        
+        if (provData) setArkeoProviders(parseInt(provData.result.total_count || '0'))
+        if (contData) setArkeoContracts(parseInt(contData.result.total_count || '0'))
+        if (claimData) setArkeoClaims(parseInt(claimData.result.total_count || '0'))
+
+        statsLoadedRef.current = true
+
+        // Process arkeo txs
+        const arkeoTxList: Array<{ type: string; hash: string; height: string; attrs: Record<string, string> }> = []
+        if (arkeoTxData) {
+          for (const tx of (arkeoTxData.result.txs || [])) {
+            for (const ev of tx.tx_result.events) {
+              if (ev.type === 'message') {
+                const attrs: Record<string, string> = {}
+                for (const a of ev.attributes) {
+                  attrs[decodeAttr(a.key)] = decodeAttr(a.value)
+                }
+                const action = attrs['action'] || ''
+                if (action.includes('arkeo') || action.includes('Delegate')) {
+                  arkeoTxList.push({ type: action.split('.').pop() || action, hash: tx.hash, height: tx.height, attrs })
+                }
+              }
             }
           }
         }
+        setRecentArkeoTxs(arkeoTxList.slice(0, 20))
       }
-      setRecentArkeoTxs(arkeoTxList.slice(0, 20))
 
-      const totalVP = vals.reduce((s: number, v: Validator) => s + parseInt(v.voting_power), 0)
+      // Update stats (use cached values for stats that only load on first load)
+      const ni = statusData.result.node_info
 
-      setStats({
+      setStats(prev => ({
         latestBlock: si.latest_block_height,
         latestTime: si.latest_block_time,
         chainId: ni.network,
-        validators: vals.length,
-        totalVotingPower: totalVP.toLocaleString(),
+        validators: prev?.validators || 0,
+        totalVotingPower: prev?.totalVotingPower || '0',
         catching_up: si.catching_up,
-        providers: provCount,
-        contracts: contCount,
-        claims: claimCount,
-      })
+        providers: prev?.providers || 0,
+        contracts: prev?.contracts || 0,
+        claims: prev?.claims || 0,
+      }))
 
       setLoading(false)
     } catch (err: any) {
-      setError(err.message || 'Failed to fetch')
+      // Don't show error on refresh cycles, only on first load
+      if (!statsLoadedRef.current) {
+        setError(err.message || 'Failed to fetch')
+      }
       setLoading(false)
     }
   }, [])
 
   useEffect(() => {
     fetchData()
-    const interval = setInterval(fetchData, 15000)
+    // Refresh every 30s (lightweight: just status + blocks = 2 reqs)
+    const interval = setInterval(fetchData, 30000)
     return () => clearInterval(interval)
   }, [fetchData])
 
