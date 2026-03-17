@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 
-// Arkeo RPC endpoints (both providers!)
+// Arkeo RPC endpoints (all providers serving arkeo-mainnet-fullnode)
 const RPC_ENDPOINTS = {
   liquify: 'https://arkeo-provider.liquify.com/arkeo-mainnet-fullnode',
-  red5: 'http://red5-arkeo.duckdns.org:3636',
+  red5: 'http://red5-arkeo.duckdns.org:3636/arkeo-mainnet-fullnode',
+  innovationtheory: 'http://provider-core-1.innovationtheory.com:3636/arkeo-mainnet-fullnode',
 }
 const RPC = RPC_ENDPOINTS.liquify // primary
 
@@ -72,7 +73,7 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<'overview' | 'blocks' | 'validators' | 'txs' | 'arkeo'>('overview')
-  const [rpcLatency, setRpcLatency] = useState<{ liquify: number; red5: number }>({ liquify: 0, red5: 0 })
+  const [rpcLatency, setRpcLatency] = useState<{ liquify: number; red5: number; innovationtheory: number }>({ liquify: 0, red5: 0, innovationtheory: 0 })
 
   // Arkeo-specific data
   const [arkeoProviders, setArkeoProviders] = useState<number>(0)
@@ -95,7 +96,13 @@ function App() {
         await fetch(`${RPC_ENDPOINTS.red5}/status`)
       } catch { /* Red5 may not have CORS */ }
       const red5Ms = Math.round(performance.now() - t2)
-      setRpcLatency({ liquify: liquifyMs, red5: red5Ms })
+      
+      const t3 = performance.now()
+      try {
+        await fetch(`${RPC_ENDPOINTS.innovationtheory}/status`)
+      } catch { /* may not have CORS */ }
+      const itMs = Math.round(performance.now() - t3)
+      setRpcLatency({ liquify: liquifyMs, red5: red5Ms, innovationtheory: itMs })
 
       const si = statusData.result.sync_info
       const ni = statusData.result.node_info
@@ -215,8 +222,10 @@ function App() {
             <div className="rpc-status">
               <span className="rpc-dot online"></span>
               <span className="rpc-label">Liquify <span className="rpc-ms">{rpcLatency.liquify}ms</span></span>
+              <span className="rpc-label">Red_5 <span className="rpc-ms">{rpcLatency.red5}ms</span></span>
+              <span className="rpc-label">IT <span className="rpc-ms">{rpcLatency.innovationtheory}ms</span></span>
             </div>
-            <a href="https://rbechtold69.github.io/arkeo-data-engine-v2/" target="_blank" rel="noopener" className="nav-link">← Marketplace</a>
+            <a href="https://arkeomarketplace.com" target="_blank" rel="noopener" className="nav-link">← Marketplace</a>
           </div>
         </div>
       </header>
