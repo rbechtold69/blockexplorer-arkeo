@@ -4,11 +4,15 @@ import './App.css'
 // Arkeo RPC endpoints — use same-origin proxy on HTTPS, direct on GitHub Pages
 const isHTTPS = typeof window !== 'undefined' && window.location.protocol === 'https:'
 const RPC_ENDPOINTS = {
-  liquify: isHTTPS ? '/rpc/liquify/arkeo-mainnet-fullnode' : 'https://arkeo-provider.liquify.com/arkeo-mainnet-fullnode',
   red5: isHTTPS ? '/rpc/red5/arkeo-mainnet-fullnode' : 'http://red5-arkeo.duckdns.org:3636/arkeo-mainnet-fullnode',
-  innovationtheory: isHTTPS ? '/rpc/innovationtheory/arkeo-mainnet-fullnode' : 'http://provider-core-1.innovationtheory.com:3636/arkeo-mainnet-fullnode',
+  everstake: isHTTPS ? '/rpc/everstake/arkeo-mainnet-fullnode' : 'http://135.181.18.66:3636/arkeo-mainnet-fullnode',
+  stakevillage: isHTTPS ? '/rpc/stakevillage/arkeo-mainnet-fullnode' : 'http://142.132.148.174:3636/arkeo-mainnet-fullnode',
+  nodefleet: isHTTPS ? '/rpc/nodefleet/arkeo-mainnet-fullnode' : 'http://148.72.141.214:3636/arkeo-mainnet-fullnode',
+  oxfury: isHTTPS ? '/rpc/oxfury/arkeo-mainnet-fullnode' : 'http://arkeo.dc01.0xfury.io:3636/arkeo-mainnet-fullnode',
 }
-const RPC = RPC_ENDPOINTS.liquify // primary
+// Primary endpoint used throughout fetchData
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+void RPC_ENDPOINTS.red5
 
 interface BlockHeader {
   height: string
@@ -74,7 +78,7 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<'overview' | 'blocks' | 'validators' | 'txs' | 'arkeo'>('overview')
-  const [rpcLatency, setRpcLatency] = useState<{ liquify: number; red5: number; innovationtheory: number }>({ liquify: 0, red5: 0, innovationtheory: 0 })
+  const [rpcLatency, setRpcLatency] = useState<{ red5: number; everstake: number; stakevillage: number; nodefleet: number; oxfury: number }>({ red5: 0, everstake: 0, stakevillage: 0, nodefleet: 0, oxfury: 0 })
 
   // Arkeo-specific data
   const [arkeoProviders, setArkeoProviders] = useState<number>(0)
@@ -82,7 +86,8 @@ function App() {
   const [arkeoClaims, setArkeoClaims] = useState<number>(0)
   const [recentArkeoTxs, setRecentArkeoTxs] = useState<Array<{ type: string; hash: string; height: string; attrs: Record<string, string> }>>([])
 
-  const statsLoaded = useState(false)[0]
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  void useState(false)[0]
   const [statsLoadedRef] = useState({ current: false })
 
   // Safe JSON fetch — handles rate limit text responses gracefully
@@ -101,14 +106,14 @@ function App() {
       const isFirstLoad = !statsLoadedRef.current
 
       // Use primary provider for lightweight refresh (status + blocks = 2 reqs)
-      const P1 = RPC_ENDPOINTS.liquify
+      const P1 = RPC_ENDPOINTS.red5
 
       // Fetch status (1 req)
       const t1 = performance.now()
       const statusData = await safeFetch(`${P1}/status`)
       if (!statusData) { setLoading(false); return }
-      const liquifyMs = Math.round(performance.now() - t1)
-      setRpcLatency(prev => ({ ...prev, liquify: liquifyMs }))
+      const red5Ms = Math.round(performance.now() - t1)
+      setRpcLatency(prev => ({ ...prev, red5: red5Ms }))
 
       const si = statusData.result.sync_info
       const latestHeight = parseInt(si.latest_block_height)
@@ -126,35 +131,35 @@ function App() {
         setBlocks(blockMetas)
       }
 
-      // === FIRST LOAD ONLY: Heavy queries spread across providers ===
+      // === FIRST LOAD ONLY: All queries go through primary (Red_5) for reliability ===
       if (isFirstLoad) {
-        const P2 = RPC_ENDPOINTS.red5
-        const P3 = RPC_ENDPOINTS.innovationtheory
-
+        // Latency checks for other providers (non-blocking — don't let failures stall loading)
         // Latency checks for other providers
-        const t2 = performance.now()
-        try { await safeFetch(`${P2}/status`); setRpcLatency(prev => ({ ...prev, red5: Math.round(performance.now() - t2) })) } catch { setRpcLatency(prev => ({ ...prev, red5: -1 })) }
-        const t3 = performance.now()
-        try { await safeFetch(`${P3}/status`); setRpcLatency(prev => ({ ...prev, innovationtheory: Math.round(performance.now() - t3) })) } catch { setRpcLatency(prev => ({ ...prev, innovationtheory: -1 })) }
+        const latencyChecks: Array<{ name: string; endpoint: string }> = [
+          { name: 'everstake', endpoint: RPC_ENDPOINTS.everstake },
+          { name: 'stakevillage', endpoint: RPC_ENDPOINTS.stakevillage },
+          { name: 'nodefleet', endpoint: RPC_ENDPOINTS.nodefleet },
+          { name: 'oxfury', endpoint: RPC_ENDPOINTS.oxfury },
+        ]
+        for (const check of latencyChecks) {
+          const tc = performance.now()
+          try { await safeFetch(`${check.endpoint}/status`); setRpcLatency(prev => ({ ...prev, [check.name]: Math.round(performance.now() - tc) })) } catch { setRpcLatency(prev => ({ ...prev, [check.name]: -1 })) }
+        }
 
-        // Validators from P1 (1 more req on Liquify — total 4 on first load)
+        // All data queries use primary provider (Red_5) for reliability
         const valData = await safeFetch(`${P1}/validators?per_page=100`)
         if (valData) setValidators(valData.result.validators || [])
 
-        // Recent txs from P2 — Red_5 (2 reqs on Red_5)
-        const txData = await safeFetch(`${P2}/tx_search?query="tx.height>${latestHeight - 100}"&per_page=20&order_by="desc"`)
+        const txData = await safeFetch(`${P1}/tx_search?query="tx.height>${latestHeight - 100}"&per_page=20&order_by="desc"`)
         if (txData) setRecentTxs(txData.result.txs || [])
 
-        // Wait a beat to not hammer providers simultaneously  
-        await new Promise(r => setTimeout(r, 1000))
+        const arkeoTxData = await safeFetch(`${P1}/tx_search?query="tx.height>${latestHeight - 5000}"&per_page=50&order_by="desc"`)
 
-        const arkeoTxData = await safeFetch(`${P2}/tx_search?query="tx.height>${latestHeight - 5000}"&per_page=50&order_by="desc"`)
-
-        // Arkeo module stats from P3 — InnovationTheory (3 reqs)
+        // Arkeo module stats — all from primary provider
         const [provData, contData, claimData] = await Promise.all([
-          safeFetch(`${P3}/tx_search?query="message.action='/arkeo.arkeo.MsgModProvider'"&per_page=1`),
-          safeFetch(`${P3}/tx_search?query="message.action='/arkeo.arkeo.MsgOpenContract'"&per_page=1`),
-          safeFetch(`${P3}/tx_search?query="message.action='/arkeo.arkeo.MsgClaimContractIncome'"&per_page=1`),
+          safeFetch(`${P1}/tx_search?query="message.action='/arkeo.arkeo.MsgModProvider'"&per_page=1`),
+          safeFetch(`${P1}/tx_search?query="message.action='/arkeo.arkeo.MsgOpenContract'"&per_page=1`),
+          safeFetch(`${P1}/tx_search?query="message.action='/arkeo.arkeo.MsgClaimContractIncome'"&per_page=1`),
         ])
         
         if (provData) setArkeoProviders(parseInt(provData.result.total_count || '0'))
@@ -242,9 +247,11 @@ function App() {
           <div className="header-right">
             <div className="rpc-status">
               <span className="rpc-dot online"></span>
-              <span className="rpc-label">Liquify <span className="rpc-ms">{rpcLatency.liquify}ms</span></span>
               <span className="rpc-label">Red_5 <span className="rpc-ms">{rpcLatency.red5}ms</span></span>
-              <span className="rpc-label">IT <span className="rpc-ms">{rpcLatency.innovationtheory}ms</span></span>
+              <span className="rpc-label">Everstake <span className="rpc-ms">{rpcLatency.everstake > 0 ? `${rpcLatency.everstake}ms` : '—'}</span></span>
+              <span className="rpc-label">StakeVillage <span className="rpc-ms">{rpcLatency.stakevillage > 0 ? `${rpcLatency.stakevillage}ms` : '—'}</span></span>
+              <span className="rpc-label">NodeFleet <span className="rpc-ms">{rpcLatency.nodefleet > 0 ? `${rpcLatency.nodefleet}ms` : '—'}</span></span>
+              <span className="rpc-label">0xFury <span className="rpc-ms">{rpcLatency.oxfury > 0 ? `${rpcLatency.oxfury}ms` : '—'}</span></span>
             </div>
             <a href="https://arkeomarketplace.com" target="_blank" rel="noopener" className="nav-link">← Marketplace</a>
           </div>
@@ -338,7 +345,7 @@ function App() {
 
               {/* How this works */}
               <div className="info-banner">
-                <strong>🔭 Meta:</strong> This block explorer reads Arkeo chain data <em>through Arkeo's own sentinel</em>. The data you see was fetched via Arkeo provider (Liquify) serving the <code>arkeo-mainnet-fullnode</code> service — the network exploring itself.
+                <strong>🔭 Meta:</strong> This block explorer reads Arkeo chain data <em>through Arkeo's own sentinel</em>. The data you see was fetched via Arkeo providers (Red_5, Everstake, StakeVillage, NodeFleet, 0xFury) serving the <code>arkeo-mainnet-fullnode</code> service.
               </div>
             </>
           )}
@@ -495,7 +502,7 @@ function App() {
           {' '}— exploring itself via its own decentralized RPC
         </p>
         <p className="footer-sub">
-          Data served by Liquify provider via <code>arkeo-mainnet-fullnode</code> sentinel service
+          Data served by Red_5 provider via <code>arkeo-mainnet-fullnode</code> sentinel service
         </p>
       </footer>
     </div>
