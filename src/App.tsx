@@ -3,12 +3,16 @@ import './App.css'
 
 // Arkeo RPC endpoints — use same-origin proxy on HTTPS, direct on GitHub Pages
 const isHTTPS = typeof window !== 'undefined' && window.location.protocol === 'https:'
+// Only providers that serve arkeo-mainnet-fullnode can be used here
 const RPC_ENDPOINTS = {
   red5: isHTTPS ? '/rpc/red5/arkeo-mainnet-fullnode' : 'http://red5-arkeo.duckdns.org:3636/arkeo-mainnet-fullnode',
-  everstake: isHTTPS ? '/rpc/everstake/arkeo-mainnet-fullnode' : 'http://135.181.18.66:3636/arkeo-mainnet-fullnode',
-  stakevillage: isHTTPS ? '/rpc/stakevillage/arkeo-mainnet-fullnode' : 'http://142.132.148.174:3636/arkeo-mainnet-fullnode',
-  nodefleet: isHTTPS ? '/rpc/nodefleet/arkeo-mainnet-fullnode' : 'http://148.72.141.214:3636/arkeo-mainnet-fullnode',
-  oxfury: isHTTPS ? '/rpc/oxfury/arkeo-mainnet-fullnode' : 'http://arkeo.dc01.0xfury.io:3636/arkeo-mainnet-fullnode',
+}
+// Other providers shown for latency display (they serve ETH/Arbitrum/etc, not Arkeo chain)
+const PROVIDER_LATENCY_ENDPOINTS = {
+  stakevillage: isHTTPS ? '/rpc/stakevillage/eth-mainnet-fullnode' : 'http://142.132.148.174:3636/eth-mainnet-fullnode',
+  everstake: isHTTPS ? '/rpc/everstake/arbitrum-mainnet-fullnode' : 'http://135.181.18.66:3636/arbitrum-mainnet-fullnode',
+  oxfury: isHTTPS ? '/rpc/oxfury/eth-mainnet-fullnode' : 'http://arkeo.dc01.0xfury.io:3636/eth-mainnet-fullnode',
+  nodefleet: isHTTPS ? '/rpc/nodefleet/metadata.json' : 'http://148.72.141.214:3636/metadata.json',
 }
 // Primary endpoint used throughout fetchData
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -134,16 +138,16 @@ function App() {
       // === FIRST LOAD ONLY: All queries go through primary (Red_5) for reliability ===
       if (isFirstLoad) {
         // Latency checks for other providers (non-blocking — don't let failures stall loading)
-        // Latency checks for other providers
+        // Latency checks for other providers (these serve different chains but show sentinel reachability)
         const latencyChecks: Array<{ name: string; endpoint: string }> = [
-          { name: 'everstake', endpoint: RPC_ENDPOINTS.everstake },
-          { name: 'stakevillage', endpoint: RPC_ENDPOINTS.stakevillage },
-          { name: 'nodefleet', endpoint: RPC_ENDPOINTS.nodefleet },
-          { name: 'oxfury', endpoint: RPC_ENDPOINTS.oxfury },
+          { name: 'stakevillage', endpoint: PROVIDER_LATENCY_ENDPOINTS.stakevillage },
+          { name: 'everstake', endpoint: PROVIDER_LATENCY_ENDPOINTS.everstake },
+          { name: 'oxfury', endpoint: PROVIDER_LATENCY_ENDPOINTS.oxfury },
+          { name: 'nodefleet', endpoint: PROVIDER_LATENCY_ENDPOINTS.nodefleet },
         ]
         for (const check of latencyChecks) {
           const tc = performance.now()
-          try { await safeFetch(`${check.endpoint}/status`); setRpcLatency(prev => ({ ...prev, [check.name]: Math.round(performance.now() - tc) })) } catch { setRpcLatency(prev => ({ ...prev, [check.name]: -1 })) }
+          try { const r = await fetch(check.endpoint, { signal: AbortSignal.timeout(5000) }); if (r.ok) setRpcLatency(prev => ({ ...prev, [check.name]: Math.round(performance.now() - tc) })); else setRpcLatency(prev => ({ ...prev, [check.name]: -1 })) } catch { setRpcLatency(prev => ({ ...prev, [check.name]: -1 })) }
         }
 
         // All data queries use primary provider (Red_5) for reliability
